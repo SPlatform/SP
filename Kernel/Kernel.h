@@ -93,7 +93,13 @@
  * 
  * NOTE
  * 	If you need to change TaskName##Type structure, you have to pay attention to
- * 	change also order or initialization order of 'TaskName'
+ * 	change also initialization order of 'TaskName'
+ *
+ * IMP __stack MUST BE ALIGNED WITH size of stack so it is located as first item
+ * in the 'TaskName##Type' structure and 'TaskName' address is aligned using
+ * ALIGN_ADDRESS_TO() macro.
+ * Therefore, please pay attention to __stack variable's offset in structure and
+ * address if you need to change structure of that.
  *
  * @param TaskName Name of user task. 
  * @param StartPoint Start point (function) for user tasks. User task started 
@@ -105,12 +111,12 @@
 #define OS_USER_TASK(TaskName, StartPoint, StackSize, Priority) \
 typedef struct \
 { \
+    reg32_t __stack[StackSize / sizeof(int)]; \
+    uint32_t __stackSize; \
     OSUserTaskStartPoint __task; \
     uint32_t __priority; \
-    uint32_t __stackSize; \
-    uint8_t __stack[StackSize]; \
 } TaskName##Type; \
-static TaskName##Type TaskName = { StartPoint, Priority, StackSize, { 0 } };
+static TaskName##Type TaskName ALIGN_ADDRESS_TO(StackSize) = { { StackSize }, StackSize, StartPoint, Priority};
 
 /*
  * Prefix for User Task. 

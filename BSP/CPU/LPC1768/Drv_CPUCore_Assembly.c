@@ -50,6 +50,7 @@
 /********************************* INCLUDES ***********************************/
 
 #include "Drv_CPUCore_Internal.h"
+#include "LPC17xx.h"
 #include "postypes.h"
 
 /***************************** MACRO DEFINITIONS ******************************/
@@ -57,18 +58,19 @@
 /* Vector Table Offset Register */
 #define REG_SCB_VTOR_ADDR					(0xE000ED08)
 
-/*
- * (Comment from FreeRTOS)
- * !!!! configMAX_SYSCALL_INTERRUPT_PRIORITY must not be set to zero !!!!
- *
- *  See http://www.FreeRTOS.org/RTOS-Cortex-M3-M4.html.
- */
+/* MPU Region Base Register Address */
+#define REG_MPU_REGION_BASE_ADDR			(0xE000ED9C)
+
+/* Fail */
+#define LOAD_EXEC_RETURN_CODE 				(0xfffffffd)
+
+/*  */
 #define MAX_SYSCALL_INTERRUPT_PRIORITY 		(191) /* equivalent to 0xb0, or priority 11. */
 
 /***************************** TYPE DEFINITIONS *******************************/
 
 /**************************** FUNCTION PROTOTYPES *****************************/
-
+ASSEMBLY_FUNCTION void SwitchToFirstTask(void);
 /******************************** VARIABLES ***********************************/
 
 /***************************** PRIVATE FUNCTIONS ******************************/
@@ -78,7 +80,7 @@
 #if defined(__ARMCC_VERSION) /* ARMCC Assembly Area */
 
 /*
- * ISR for PendSV Exception
+ * ISR for PendSV IRQ Handler
  *
  *  We use PendSV Interrupts for Context Switching
  *
@@ -94,12 +96,20 @@ ASSEMBLY_FUNCTION void POS_PendSV_Handler( void )
 	mrs r0, psp
 	isb
 
-	ldr	r3, =currentTCB			/* Get the location of the current TCB. */
+	/* Get the location of the current TCB. */
+	ldr	r3, =currentTCB
 	ldr	r2, [r3]
 
-	stmdb r0!, {r4-r11}			/* Save the remaining registers. */
+	/*
+	 * Restore Task Registers
+	 */
+	mrs r1, control
+	stmdb r0!, {r1, r4-r11}		/* Save the remaining registers. */
 	str r0, [r2]				/* Save the new top of stack into the first member of the TCB. */
 
+	/*
+	 * Switch context
+	 */
 	stmdb sp!, {r3, r14}
 	mov r0, #MAX_SYSCALL_INTERRUPT_PRIORITY
 	msr basepri, r0
@@ -110,13 +120,86 @@ ASSEMBLY_FUNCTION void POS_PendSV_Handler( void )
 	msr basepri, r0
 	ldmia sp!, {r3, r14}
 
+	/*
+	 * Memory Protection for Application Seperation
+	 */
 	ldr r1, [r3]
-	ldr r0, [r1]				/* The first item in currentTCB is the task top of stack. */
-	ldmia r0!, {r4-r11}			/* Pop the registers and the critical nesting count. */
+	ldr r0, [r1]						/* The first item in currentTCB is the task top of stack. */
+	add r1, r1, #4						/* Move onto the second item in the TCB... */
+	ldr r2, =REG_MPU_REGION_BASE_ADDR	/* Region Base Address register. */
+	ldmia r1!, {r4-r11}					/* Read 4 sets of MPU registers. */
+	stmia r2!, {r4-r11}					/* Write 4 sets of MPU registers. */
+
+	/* Set new task registers */
+	ldmia r0!, {r3, r4-r11}		/* Pop the registers */
+	msr control, r3
+
 	msr psp, r0
 	isb
+
+	/* Jump to next task */
 	bx r14
-	nop
+}
+
+/*
+ * SVC (Super-Visor Call) IRQ Handler
+ *
+ *  We are using super-visor calls to handle context switching and system calls
+ *  from unprivileged applications.
+ *
+ *   Please see
+ *   http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.dai0179b/ar01s02s07.html
+ *   to see how to pass parameter to SVC Calls
+ *
+ */
+ASSEMBLY_FUNCTION void POS_SVC_Handler(void)
+{
+	IMPORT SVCHandler
+
+	TST lr, #4
+	MRSEQ r0, MSP
+	MRSNE r0, PSP
+
+	/* Call SVCHandler function to process SVC Call */
+	B SVCHandler
+}
+
+/*
+ * SVC Request Handler
+ *  Handles and processes specific Super-Visor Calls
+ */
+void SVCHandler(uint32_t * svc_args)
+{
+	uint32_t svc_number;
+
+	/*
+     * http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.dai0179b/ar01s02s07.html
+     * Stack contains:    * r0, r1, r2, r3, r12, r14, the return address and xPSR
+	 * First argument (r0) is svc_args[0]
+	 */
+	svc_number = ((char *)svc_args[6])[-2];
+
+	switch(svc_number)
+	{
+		case CPUCORE_SVCALL_START_CS:
+			SwitchToFirstTask();
+			break;
+		case CPUCORE_SVCALL_YIELD:
+			/* Set a PendSV to request a context switch. */
+			SCB->ICSR = (reg32_t)SCB_ICSR_PENDSVSET_Msk;
+
+			/*
+			 * Barriers are normally not required but do ensure the code is completely
+			 * within the specified behavior for the architecture. (Note From FreeRTOS)
+			 */
+			__DMB();
+			break;
+		case CPUCORE_SVCALL_RAISE_PRIVILEGE:
+			/* Not defined yet */
+			break;
+		default:
+			break;
+	}
 }
 
 /*
@@ -126,22 +209,42 @@ ASSEMBLY_FUNCTION void POS_PendSV_Handler( void )
  *
  * Implementation copied from FreeRTOS
  */
-ASSEMBLY_FUNCTION void POS_SVC_Handler(void)
+ASSEMBLY_FUNCTION void SwitchToFirstTask( void )
 {
 	extern currentTCB;
 
 	PRESERVE8
 
-	ldr	r3, =currentTCB		/* Restore the context. */
-	ldr r1, [r3]			/* Get the currentTCB address. */
-	ldr r0, [r1]			/* The first item in currentTCB is the task top of stack. */
-	ldmia r0!, {r4-r11}		/* Pop the registers that are not automatically saved on exception entry and the critical nesting count. */
-	msr psp, r0				/* Restore the task stack pointer. */
-	isb
+	/* Use the NVIC offset register to locate the stack. */
+	ldr r0, =REG_SCB_VTOR_ADDR
+	ldr r0, [r0]
+	ldr r0, [r0]
+	msr msp, r0							/* Set the msp back to the start of the stack. */
+	ldr	r3, =currentTCB					/* Restore the context. */
+	ldr r1, [r3]
+	ldr r0, [r1]						/* The first item in the TCB is the task top of stack. */
+
+	/*
+	 * Memory Protection
+	 */
+	add r1, r1, #4						/* Move onto the second item in the TCB... */
+	ldr r2, =REG_MPU_REGION_BASE_ADDR	/* Region Base Address register. */
+	ldmia r1!, {r4-r11}					/* Read 4 sets of MPU registers. */
+	stmia r2!, {r4-r11}					/* Write 4 sets of MPU registers. */
+	ldmia r0!, {r3, r4-r11}				/* Pop the registers that are not automatically saved on exception entry. */
+
+	/*
+	 * Set control register for priviliged state
+	 */
+	msr control, r3
+	msr psp, r0							/* Restore the task stack pointer. */
 	mov r0, #0
 	msr	basepri, r0
-	orr r14, #0xd
+	ldr r14, =LOAD_EXEC_RETURN_CODE		/* Load exec return code. */
+
+	/* Jump to first task*/
 	bx r14
+	nop
 }
 
 /*
@@ -163,18 +266,42 @@ ASSEMBLY_FUNCTION void StartContextSwitching(void){
 
 	/* Set the msp back to the start of the stack. */
 	msr msp, r0
+
 	/* Globally enable interrupts. */
 	cpsie i
 	cpsie f
 	dsb
 	isb
+
 	/* Call SVC to start the first task. */
-	svc 0
-	nop
-	nop
+	svc #CPUCORE_SVCALL_START_CS
+}
+
+/*
+ * Switches running task to provided new TCB
+ *
+ * @param newTCB to be switched TCB
+ * @param none
+ *
+ */
+void Drv_CPUCore_CSYieldTo(reg32_t* newTCB)
+{
+	extern reg32_t* nextTCB;
+
+	/* Save TCB for task switching */
+    nextTCB = newTCB;
+
+	/*
+	 * Make a service call to trigger
+	 */
+	__asm
+	{
+		svc #CPUCORE_SVCALL_YIELD
+	}
 }
 
 #else /* GNU C - GCC Assembly Area */
+
 /*
  * TODO : [IMP] Until we use assembly code, we will not test Assembly modules.
  * So compile assembly blocks only for "Project Builds"
@@ -274,7 +401,6 @@ ASSEMBLY_FUNCTION void StartContextSwitching(void)
 	__asm volatile
 	(
 		" ldr r0, =0xE000ED08 	\n" /* Use the NVIC offset register to locate the stack. */
-		//" ldr r0, %0 			\n" /* Use the NVIC offset register to locate the stack. */
 		" ldr r0, [r0] 			\n"
 		" ldr r0, [r0] 			\n"
 		" msr msp, r0			\n" /* Set the msp back to the start of the stack. */

@@ -65,7 +65,7 @@ typedef void (*SchedulerCSCallback)(TCB* nextTCB);
  *
  * @return none
  */
-void Scheduler_Init(TCB* tcbList, TCB* idleTCB, SchedulerCSCallback csCallback);
+void Scheduler_Init(UserApp* tcbList, UserApp* idleTCB, SchedulerCSCallback csCallback);
 
 /*
  * Yields task in Scheduler side.

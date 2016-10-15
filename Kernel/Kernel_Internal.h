@@ -72,6 +72,8 @@
  * Size of idle stack.
  *
  *  128 byte should be enough
+ *  TODO : Lower than 512 causes crash when MPU enabled. Find root cause and
+			reduce to sutable size
  */
 #define IDLE_TASK_STACK_SIZE		    (128)
 
@@ -113,7 +115,7 @@
 #define Kernel_StartContextSwitching    Drv_CPUCore_CSStart
 
 /* Wrapper function definition to initialize task stack */
-#define Kernel_InitializeTaskStack      Drv_CPUCore_CSInitializeTaskStack
+#define Kernel_InitializeTask      		Drv_CPUCore_CSInitializeTask
 
 /* Wrapper function definition to yield running task to */
 #define Kernel_SwitchTo                 Drv_CPUCore_CSYieldTo
@@ -153,6 +155,15 @@ typedef TimerHandle KernelTimerHandle;
 typedef struct
 {
 	/*
+	 * Symbolic Symbol for Stack.
+	 */
+	//uint8_t stack[0];
+
+	/*
+	 * Stack size of User Task
+	 */
+	uint32_t stackSize;
+	/*
 	 * User Task start point.
 	 *
 	 * User task starts with that point (function).
@@ -163,50 +174,19 @@ typedef struct
      * User Task Priority
      */
     uint32_t priority;
-	/*
-	 * Stack size of User Task
-	 */
-	uint32_t stackSize;
-	/*
-	 * Start address of task stack.
-	 *
-	 * We use this variable for just start point of user task.
-	 * Boundary check can be done by stackSize variable.
-	 *
-	 * NOTE : While each task has different stack size, we define size as
-	 * '1' to get start point of user stack. It could be zero but zero-sized
-	 * arrays are not portable and some platforms does not support it.
-	 *
-	 */
-	uint8_t stack[1];
-} UserTaskBaseType;
+
+} UserAppBaseType;
 
 /*
- * Task Control Block (TCB)
- *
- *  Includes all task specific information including required information for
- *	Context Switching.
+ * User Application
  */
-typedef struct TCB
+typedef struct
 {
-	/*
-	 * Actual top address of stack of task.
-	 *
-	 *  When a user task is started, task starts to use stack from end of
-	 *  stack in descending order.
-	 *  When a task preempted, we need to save actual position of stack to
-	 *  backup next execution of task.
-	 *
-	 *	[IMP] This value must be first item in that data structure. When we pass
-	 *	a TCB to context switcher mechanism, HW looks for first address.
-	 */
-	reg32_t* topOfStack;
-
-	/*
-	 * User defined task Information.
-	 */
-	UserTaskBaseType* userTaskInfo;
-} TCB;
+	/* TCB of User Application */
+	TCB tcb;
+	/* User defined information of Application */
+	UserAppBaseType* info;
+} UserApp;
 /*************************** FUNCTION DEFINITIONS *****************************/
 
 #endif	/* __KERNEL_INTERNAL_H */

@@ -44,6 +44,34 @@
 /***************************** TYPE DEFINITIONS *******************************/
 typedef void(*Drv_CPUCore_TaskStartPoint)(void* arg);
 
+/*
+ * Task Control Block (TCB)
+ *
+ *  Includes all task specific information including required information for
+ *	Context Switching.
+ */
+typedef struct TCB
+{
+	/*
+	 * Actual top address of stack of task.
+	 *
+	 *  When a user task is started, task starts to use stack from end of
+	 *  stack in descending order.
+	 *  When a task preempted, we need to save actual position of stack to
+	 *  backup next execution of task.
+	 *
+	 *	[IMP] This value must be first item in that data structure. When we pass
+	 *	a TCB to context switcher mechanism, HW looks for first address.
+	 */
+	reg32_t* topOfStack;
+
+	/* Task Specific MPU Info */
+	struct
+	{
+		volatile uint32_t __internal;
+		volatile uint32_t __internal2;
+	} mpuInfo[4];
+} TCB;
 /*************************** FUNCTION DEFINITIONS *****************************/
 /**
 * Initializes actual CPU and its components/peripherals.
@@ -92,7 +120,15 @@ void Drv_CPUCore_CSYieldTo(reg32_t* newTCB);
  * @return top of stack after initialization. 
  *		   [IMP] Caller should keep top of stack address for new context switches.
  */
-reg32_t* Drv_CPUCore_CSInitializeTaskStack(uint8_t* stack, uint32_t stackSize,
-										   Drv_CPUCore_TaskStartPoint startPoint);
-
+void Drv_CPUCore_CSInitializeTask(TCB* tcb, uint8_t* stack, uint32_t stackSize,
+										   Drv_CPUCore_TaskStartPoint startPoint,
+										   bool privileged);
+/*
+ * Initializes Memory Protection for whole system.
+ *
+ * @param none
+ *
+ * @return none
+ */
+void Drv_CPUCore_InitializeMPU(void);
 #endif	/* __DRV_CPUCORE_H */

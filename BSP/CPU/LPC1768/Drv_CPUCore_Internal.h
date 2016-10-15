@@ -38,16 +38,25 @@
 #define __DRV_CPUCORE_INTERNAL_H
 
 /********************************* INCLUDES ***********************************/
+#include "Drv_CPUCore.h"
 #include "postypes.h"
 
 /***************************** MACRO DEFINITIONS ******************************/
 
+/*
+ * Super - Visor Call Types
+ */
+/* Start Context Switching using first task */
+#define CPUCORE_SVCALL_START_CS				(0)
+/* Task Yield */
+#define CPUCORE_SVCALL_YIELD				(1)
+/* Raise Privilege Mode */
+#define CPUCORE_SVCALL_RAISE_PRIVILEGE		(2)
 /***************************** TYPE DEFINITIONS *******************************/
 
 /**************************** FUNCTION PROTOTYPES *****************************/
 
 /******************************** VARIABLES ***********************************/
-
 
 /*************************** FUNCTION PROTOTYPES *****************************/
 /*
@@ -61,5 +70,17 @@
  * @return none
  */
 INTERNAL void StartContextSwitching(void);
+
+/*
+ * Initializes Task for Memory Protection
+ *
+ * @param tcb To be initialized TCB
+ * @param stackBottom Bottom Of task stack. User stack is released for task
+ *        itself so it can access its stack.
+ * @param stackSize Size of user stack
+ *
+ * @return none
+ */
+INTERNAL void Drv_CPUCore_InitializeTaskMPU(TCB* tcb, reg32_t stackBottom, uint32_t stackSize);
 
 #endif /* __DRV_CPUCORE_INTERNAL_H */

@@ -72,14 +72,14 @@ KERNEL_TASK(IdleTask, IdleTaskFunc, IDLE_TASK_STACK_SIZE, IDLE_TASK_PRIORITY);
  * 
  *  Keeps all kernel and user tasks.
  */
-PRIVATE TCB kernelTaskPool[NUM_OF_USER_TASKS];
+PRIVATE UserApp kernelAppPool[NUM_OF_USER_TASKS];
 
 /*
  * Task Pool. 
  * 
  *  Keeps all kernel and user tasks. 
  */
-PRIVATE TCB idleTaskTCB;
+PRIVATE UserApp idleApp;
 
 /**************************** PRIVATE FUNCTIONS ******************************/
 
@@ -113,14 +113,18 @@ PRIVATE KERNEL_TASK_START_POINT(IdleTaskFunc)
  * 
  * @param tcb to be initialized new task (TSB)
  */
-PRIVATE ALWAYS_INLINE void InitializeNewTask(TCB* newTCB)
+PRIVATE ALWAYS_INLINE void InitializeNewTask(UserApp* app)
 {
-	UserTaskBaseType* userTask = newTCB->userTaskInfo;
+	TCB* tcb = &app->tcb;
+	reg32_t* stack = (reg32_t*)app->info;
+	uint32_t stackSize = stack[0];
+	UserAppBaseType* userTask = (UserAppBaseType*)&stack[stackSize / sizeof(int)];
     
 	/* Initialize stack of user task according to CPU architecture */
-	newTCB->topOfStack = Kernel_InitializeTaskStack(userTask->stack,
-                                                    userTask->stackSize,
-                                                    userTask->taskStartPoint);
+	Kernel_InitializeTask(tcb, (uint8_t*)stack,
+                               userTask->stackSize,
+                               userTask->taskStartPoint,
+							   false);
 }
 
 /**
@@ -133,7 +137,7 @@ PRIVATE ALWAYS_INLINE void InitializeNewTask(TCB* newTCB)
  */
 PRIVATE ALWAYS_INLINE void StartScheduling(void)
 {
-	Kernel_StartContextSwitching((reg32_t*)&idleTaskTCB);
+	Kernel_StartContextSwitching((reg32_t*)&idleApp);
 }
 
 /**
@@ -143,10 +147,10 @@ PRIVATE ALWAYS_INLINE void StartScheduling(void)
  *
  * @return none
  */
-PRIVATE ALWAYS_INLINE void InitializeAllTasks(void)
+PRIVATE ALWAYS_INLINE void InitializeAllApps(void)
 {
-	TCB* tcb = &kernelTaskPool[0];
-	int32_t taskIndex = 0;
+	UserApp* app = &kernelAppPool[0];
+	int32_t appIndex = 0;
 	/*
 	 * Each User task creates its type and we collect user tasks in a single
 	 * container (startupApplications) to manage startup applications.
@@ -159,18 +163,18 @@ PRIVATE ALWAYS_INLINE void InitializeAllTasks(void)
     int* appPtr = (int*)startupApplications;
 
 	/* Initialize user tasks */
-    for (taskIndex = 0; taskIndex < NUM_OF_USER_TASKS; taskIndex++, tcb++, appPtr++)
+    for (appIndex = 0; appIndex < NUM_OF_USER_TASKS; appIndex++, app++, appPtr++)
 	{
 		/* Save User Task Info into TCB */
-		tcb->userTaskInfo = (UserTaskBaseType*)*appPtr;
+		app->info = (UserAppBaseType*)*appPtr;
 
 		/* Initialize New Task */
-        InitializeNewTask(tcb);
+        InitializeNewTask(app);
 	}
 
 	/* Initialize idle task */
-	idleTaskTCB.userTaskInfo = (UserTaskBaseType*)OS_USER_TASK_PREFIX(IdleTask);
-    InitializeNewTask(&idleTaskTCB);
+	idleApp.info = (UserAppBaseType*)OS_USER_TASK_PREFIX(IdleTask);
+    InitializeNewTask(&idleApp);
 }
 
 /**
@@ -184,13 +188,19 @@ PRIVATE ALWAYS_INLINE void InitializeAllTasks(void)
 PRIVATE ALWAYS_INLINE void InitializeKernel(void)
 {
 	/* Initialize all tasks before starting scheduling */
-	InitializeAllTasks();
+	InitializeAllApps();
 
 	/* Initialize Scheduler */
-	Scheduler_Init(kernelTaskPool, &idleTaskTCB, ContextSwitch_Callback);
+	Scheduler_Init(kernelAppPool, &idleApp, ContextSwitch_Callback);
 
 	/* Initialize User Space */
 	OS_InitializeUserSpace();
+
+	/*
+	 * We already initialized Kernel before context switching, now need to
+	 * enable Memory Protection for Application Seperation
+	 */
+	Drv_CPUCore_InitializeMPU();
 }
 
 PRIVATE ALWAYS_INLINE void InitializeHW(void)

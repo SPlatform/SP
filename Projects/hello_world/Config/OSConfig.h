@@ -42,7 +42,7 @@
 /***************************** MACRO DEFINITIONS ******************************/
 
 /* Selected Scheduler Type */
-#define OS_SCHEDULER						OS_SCHEDULER_ADAPTIVE
+#define OS_SCHEDULER						OS_SCHEDULER_COOPARATIVE
 
 #define OS_TASK_CREATION                    OS_TASK_CREATION_STATIC
 

@@ -45,23 +45,31 @@
 /***************************** MACRO DEFINITIONS ******************************/
 
 /* Index of PENDSV Interrupt in System Handlers Priority (SCB->SHP) Register */
-#define SCB_SHP_PENDSV_INDEX			(10)
+#define SCB_SHP_PENDSV_INDEX							(10)
 
 /* Initial Stack Value for Program Status Register (PSR) . */
-#define TASK_INITIAL_PSR				(0x01000000)
+#define TASK_INITIAL_PSR								(0x01000000)
 
 /* 
  * PC (Program Counter) mask for task
  * Cortex-M spec offers that first bit (bit-0) of task start address should be 
  * zero. 
  */
-#define TASK_START_ADDRESS_MASK			((reg32_t)0xfffffffeUL)
+#define TASK_START_ADDRESS_MASK							((reg32_t)0xfffffffeUL)
 
 /* 
  * Priority of Kernel Interrupts. 
  *  Lowest priority!
  */
-#define KERNEL_INTERRUPT_PRIORITY       (255)
+#define KERNEL_INTERRUPT_PRIORITY       				(255)
+
+/*
+ * Stack Type Defines for CONTROL Register
+ */
+/* Main Stack (MSP) */
+#define CONTROL_REG_MAIN_STACK                         	(0)
+/* Process Stack (PSP) */
+#define CONTROL_REG_PROCESS_STACK                      	(1)
 
 /***************************** TYPE DEFINITIONS *******************************/
 /*
@@ -73,6 +81,7 @@
  */
 TYPEDEF_STRUCT_PACKED
 {
+	reg32_t CONTROL;
 	reg32_t R4;
 	reg32_t R5;
 	reg32_t R6;
@@ -107,7 +116,7 @@ INTERNAL reg32_t* currentTCB;
  * To be switched next task.
  * When a context switch occurs, currentTCB is replaced with this TCB
  */
-PRIVATE reg32_t* nextTCB;
+INTERNAL reg32_t* nextTCB;
 
 /**************************** PRIVATE FUNCTIONS ******************************/
 
@@ -124,6 +133,32 @@ INTERNAL void SwitchContext(void)
     /* TODO Check for stack overflow */
     
 	currentTCB = nextTCB;
+}
+
+/*
+ * Set Privileges Mode for User Task
+ *  To manage privileged/unprivileged mode selection during context switching
+ *  we are saving task state into stack.
+ *  For each context switching, CONTROL REG reference value is applied.
+ *  See TaskStackMap definition for location of task CONTROL Value.
+ *
+ */
+PRIVATE ALWAYS_INLINE void SetTaskPrivilegeMode(reg32_t* stackControlRegRef, bool privileged)
+{
+	CONTROL_Type* userTaskCTRLReg = (CONTROL_Type*)stackControlRegRef;
+
+	/* Clear CONTROL REG Referense first */
+	*stackControlRegRef = 0;
+
+	/* All new processes use its Stack */
+	userTaskCTRLReg->b.SPSEL = CONTROL_REG_PROCESS_STACK;
+
+	/*
+	 * Set privileged state of task
+	 *  - Privileged 	: 0
+	 *  - Unprivileged 	: 1
+	 */
+	userTaskCTRLReg->b.nPRIV = (privileged == false);
 }
 
 /*
@@ -187,33 +222,11 @@ void Drv_CPUCore_CSStart(reg32_t* initialTCB)
      */
     /* TODO should we move to more common area than this function */
 	SCB->SHP[SCB_SHP_PENDSV_INDEX] = KERNEL_INTERRUPT_PRIORITY;
-    
+
     /* 
 	 * Everything for CS is ready now let's trigger Context Switching
 	 */
 	StartContextSwitching();
-}
-
-/*
- * Switches running task to provided new TCB
- *
- * @param newTCB to be switched TCB
- * @param none
- * 
- */
-void Drv_CPUCore_CSYieldTo(reg32_t* newTCB)
-{
-	/* Save TCB for task switching */
-    nextTCB = newTCB;
-    
-	/* Set a PendSV to request a context switch. */
-    SCB->ICSR = (reg32_t)SCB_ICSR_PENDSVSET_Msk;
-	
-	/*     
-     * Barriers are normally not required but do ensure the code is completely
-	 * within the specified behavior for the architecture. (Note From FreeRTOS)
-     */
-    __DMB();
 }
 
 /*
@@ -225,11 +238,16 @@ void Drv_CPUCore_CSYieldTo(reg32_t* newTCB)
  *
  * @return top of stack after initialization. 
  */
-PUBLIC reg32_t* Drv_CPUCore_CSInitializeTaskStack(uint8_t* stack, uint32_t stackSize, Drv_CPUCore_TaskStartPoint taskStartPoint)
+PUBLIC void Drv_CPUCore_CSInitializeTask(TCB* tcb,
+										 uint8_t* stack, uint32_t stackSize,
+										 Drv_CPUCore_TaskStartPoint taskStartPoint,
+										 bool privileged)
 {
-
+	/* Convert stack to word boundary */
 	reg32_t* topOfStack = (reg32_t*)stack;
+	/* Stack depth in word */
 	uint32_t stackDepth = stackSize / sizeof(int);
+	/* Map to set task specific info on stack */
 	TaskStackMap* stackMap;
 
 	/* Calculate the top of user stack address which aligned */
@@ -263,6 +281,15 @@ PUBLIC reg32_t* Drv_CPUCore_CSInitializeTaskStack(uint8_t* stack, uint32_t stack
 	/* We do not pass argument so R0 must be zero. */
 	stackMap->R0 = (uintptr_t)NULL;
 
-	/* Return actual stack address for execution start */
-	return (reg32_t*)stackMap;
+	/* Set Privileged Mode of Task into Stack */
+	SetTaskPrivilegeMode((reg32_t*)&stackMap->CONTROL, privileged);
+
+	/* Now, initialize TCB for Memory Protection */
+	Drv_CPUCore_InitializeTaskMPU(tcb, (reg32_t)stack, stackSize);
+
+	/*
+	 * While addressing in stack is descending, task specific info in user
+	 * stack indicates top of stack
+	 */
+	tcb->topOfStack = (reg32_t*)stackMap;
 }
